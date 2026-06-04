@@ -1,5 +1,7 @@
 import random
 import json
+from math import radians, sin, cos, sqrt, atan2
+
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.contrib.auth import get_user_model
@@ -11,9 +13,13 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from accounts.models import Passenger, Driver, Ride
 from accounts.serializers import PassengerSerializer, DriverSerializer, RideSerializer
-from math import radians, sin, cos, sqrt, atan2
+
 User = get_user_model()
-  
+
+
+# -----------------------------
+# Utility: Price Calculation
+# -----------------------------
 def calculate_price(lat1, lng1, lat2, lng2, rate_per_km=5):
     try:
         if not lat1 or not lng1 or not lat2 or not lng2:
@@ -27,6 +33,8 @@ def calculate_price(lat1, lng1, lat2, lng2, rate_per_km=5):
         return round(distance * rate_per_km, 2)
     except Exception:
         return 0
+
+
 # -----------------------------
 # Passenger Registration
 # -----------------------------
@@ -40,7 +48,7 @@ def register_passenger(request):
         if not name or not phone:
             return JsonResponse({"error": "Name and phone required"}, status=400)
 
-        otp = str(random.randint(100000, 999999))  # 6-digit OTP
+        otp = str(random.randint(100000, 999999))
 
         user, _ = User.objects.get_or_create(
             username=phone,
@@ -67,7 +75,7 @@ def register_passenger(request):
 
 
 # -----------------------------
-# Verify OTP + Issue JWT
+# Verify OTP + JWT
 # -----------------------------
 @csrf_exempt
 def verify_otp(request):
@@ -76,8 +84,6 @@ def verify_otp(request):
             data = json.loads(request.body)
         except Exception:
             return JsonResponse({"error": "Invalid JSON"}, status=400)
-
-        print("Verify OTP payload:", data)
 
         phone = data.get("phone")
         otp = data.get("otp")
@@ -122,10 +128,11 @@ def passenger_login(request):
         })
     except Passenger.DoesNotExist:
         return Response({"error": "Passenger not found"}, status=401)
+
+
 # -----------------------------
 # Driver Registration
 # -----------------------------
-
 @csrf_exempt
 def register_driver(request):
     if request.method == "POST":
@@ -166,6 +173,36 @@ def register_driver(request):
             "driver_id": driver.id,
             "message": "Registration submitted. Awaiting admin approval."
         })
+
+
+# -----------------------------
+# Verify / Unverify Driver
+# -----------------------------
+@csrf_exempt
+def verify_driver(request, driver_id):
+    if request.method == "POST":
+        try:
+            driver = Driver.objects.get(id=driver_id)
+            driver.is_verified = True
+            driver.save()
+            return JsonResponse({"status": "verified", "driver_id": driver_id})
+        except Driver.DoesNotExist:
+            return JsonResponse({"error": "Driver not found"}, status=404)
+    return JsonResponse({"error": "Invalid method"}, status=405)
+
+
+@csrf_exempt
+def unverify_driver(request, driver_id):
+    if request.method == "POST":
+        try:
+            driver = Driver.objects.get(id=driver_id)
+            driver.is_verified = False
+            driver.save()
+            return JsonResponse({"status": "unverified", "driver_id": driver_id})
+        except Driver.DoesNotExist:
+            return JsonResponse({"error": "Driver not found"}, status=404)
+    return JsonResponse({"error": "Invalid method"}, status=405)
+
 
 # -----------------------------
 # Driver Login
@@ -209,20 +246,16 @@ def request_ride(request):
     dropoff_lat = data.get("dropoff_lat")
     dropoff_lng = data.get("dropoff_lng")
 
-    # ✅ Guard: block incomplete requests
     if not pickup_location or not dropoff_location:
         return Response({"error": "Pickup and dropoff are required"}, status=400)
 
     if not pickup_lat or not pickup_lng or not dropoff_lat or not dropoff_lng:
         return Response({"error": "Coordinates are required"}, status=400)
 
-    # ✅ Calculate price
     price = calculate_price(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng)
-
     if price <= 0:
         return Response({"error": "Invalid price calculation"}, status=400)
 
-    # ✅ Create ride only if valid
     ride = Ride.objects.create(
         passenger=passenger,
         pickup_location=pickup_location,
@@ -240,7 +273,7 @@ def request_ride(request):
 
 
 # -----------------------------
-# List Drivers (Passenger)
+# List Drivers
 # -----------------------------
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -251,7 +284,7 @@ def list_drivers(request):
 
 
 # -----------------------------
-# Assign Driver (Passenger)
+# Assign Driver
 # -----------------------------
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -275,7 +308,6 @@ def assign_driver(request):
         return Response({"error": "Driver not found"}, status=404)
     except Ride.DoesNotExist:
         return Response({"error": "Ride not found"}, status=404)
-
 
 # -----------------------------
 # Pending Rides (Driver)
