@@ -16,7 +16,6 @@ from accounts.serializers import PassengerSerializer, DriverSerializer, RideSeri
 
 User = get_user_model()
 
-
 # -----------------------------
 # Utility: Price Calculation
 # -----------------------------
@@ -34,33 +33,56 @@ def calculate_price(lat1, lng1, lat2, lng2, rate_per_km=5):
     except Exception:
         return 0
 
-
 # -----------------------------
 # Passenger Registration
 # -----------------------------
 @csrf_exempt
 def register_passenger(request):
-    if request.method == "POST":
-        data = json.loads(request.body)
+    try:
+        if request.method != "POST":
+            return JsonResponse(
+                {"status": False, "message": "Invalid method"},
+                status=405
+            )
+
+        try:
+            data = json.loads(request.body)
+        except Exception as e:
+            return JsonResponse({
+                "status": False,
+                "message": "Invalid JSON",
+                "error": str(e)
+            }, status=400)
+
         name = data.get("name")
         phone = data.get("phone")
 
         if not name or not phone:
-            return JsonResponse({"error": "Name and phone required"}, status=400)
+            return JsonResponse({
+                "status": False,
+                "message": "Name and phone required"
+            }, status=400)
 
         otp = str(random.randint(100000, 999999))
 
-        user, _ = User.objects.get_or_create(
+        user, user_created = User.objects.get_or_create(
             username=phone,
-            defaults={"first_name": name}
+            defaults={
+                "first_name": name
+            }
         )
 
-        passenger, created = Passenger.objects.get_or_create(
+        passenger, passenger_created = Passenger.objects.get_or_create(
             phone=phone,
-            defaults={"name": name, "otp": otp, "verified": False, "user": user}
+            defaults={
+                "name": name,
+                "otp": otp,
+                "verified": False,
+                "user": user
+            }
         )
 
-        if not created:
+        if not passenger_created:
             passenger.name = name
             passenger.otp = otp
             passenger.verified = False
@@ -68,12 +90,23 @@ def register_passenger(request):
             passenger.save()
 
         return JsonResponse({
-            "status": "ok",
+            "status": True,
+            "message": "Registration successful",
             "passenger_id": passenger.id,
-            "otp": otp  # ⚠️ For testing only
+            "otp": otp,
+            "user_created": user_created,
+            "passenger_created": passenger_created
         })
 
+    except Exception as e:
+        import traceback
 
+        return JsonResponse({
+            "status": False,
+            "error_type": type(e).__name__,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }, status=500)
 # -----------------------------
 # Verify OTP + JWT
 # -----------------------------
@@ -83,13 +116,13 @@ def verify_otp(request):
         try:
             data = json.loads(request.body)
         except Exception:
-            return JsonResponse({"error": "Invalid JSON"}, status=400)
+            return JsonResponse({"status": False, "message": "Invalid JSON"}, status=400)
 
         phone = data.get("phone")
         otp = data.get("otp")
 
         if not phone or not otp:
-            return JsonResponse({"error": "Missing phone or otp"}, status=400)
+            return JsonResponse({"status": False, "message": "Missing phone or otp"}, status=400)
 
         try:
             passenger = Passenger.objects.get(phone=phone, otp=otp)
@@ -98,13 +131,14 @@ def verify_otp(request):
 
             refresh = RefreshToken.for_user(passenger.user)
             return JsonResponse({
-                "status": "verified",
+                "status": True,
+                "message": "OTP verified",
                 "access": str(refresh.access_token),
                 "refresh": str(refresh)
             })
         except Passenger.DoesNotExist:
-            return JsonResponse({"error": "Invalid phone or otp"}, status=400)
-
+            return JsonResponse({"status": False, "message": "Invalid phone or otp"}, status=401)
+    return JsonResponse({"status": False, "message": "Invalid method"}, status=405)
 
 # -----------------------------
 # Passenger Login
@@ -114,21 +148,24 @@ def verify_otp(request):
 def passenger_login(request):
     phone = request.data.get("phone")
 
+    if not phone:
+        return Response({"status": False, "message": "Phone is required"}, status=400)
+
     try:
         passenger = Passenger.objects.get(phone=phone)
         if not passenger.verified:
-            return Response({"error": "Passenger not verified"}, status=401)
+            return Response({"status": False, "message": "Passenger not verified"}, status=401)
 
         refresh = RefreshToken.for_user(passenger.user)
         return Response({
-            "status": "ok",
+            "status": True,
+            "message": "Login successful",
             "passenger_id": passenger.id,
             "access": str(refresh.access_token),
             "refresh": str(refresh)
         })
     except Passenger.DoesNotExist:
-        return Response({"error": "Passenger not found"}, status=401)
-
+        return Response({"status": False, "message": "Passenger not found"}, status=401)
 
 # -----------------------------
 # Driver Registration
@@ -136,12 +173,19 @@ def passenger_login(request):
 @csrf_exempt
 def register_driver(request):
     if request.method == "POST":
-        data = json.loads(request.body)
+        try:
+            data = json.loads(request.body)
+        except Exception:
+            return JsonResponse({"status": False, "message": "Invalid JSON"}, status=400)
+
         full_name = data.get("full_name")
         phone = data.get("phone")
         license_number = data.get("license_number")
         car_model = data.get("car_model")
         car_plate = data.get("car_plate")
+
+        if not full_name or not phone:
+            return JsonResponse({"status": False, "message": "Full name and phone required"}, status=400)
 
         user, _ = User.objects.get_or_create(
             username=phone,
@@ -169,40 +213,11 @@ def register_driver(request):
             driver.save()
 
         return JsonResponse({
-            "status": "pending",
-            "driver_id": driver.id,
-            "message": "Registration submitted. Awaiting admin approval."
+            "status": True,
+            "message": "Driver registration submitted",
+            "driver_id": driver.id
         })
-
-
-# -----------------------------
-# Verify / Unverify Driver
-# -----------------------------
-@csrf_exempt
-def verify_driver(request, driver_id):
-    if request.method == "POST":
-        try:
-            driver = Driver.objects.get(id=driver_id)
-            driver.is_verified = True
-            driver.save()
-            return JsonResponse({"status": "verified", "driver_id": driver_id})
-        except Driver.DoesNotExist:
-            return JsonResponse({"error": "Driver not found"}, status=404)
-    return JsonResponse({"error": "Invalid method"}, status=405)
-
-
-@csrf_exempt
-def unverify_driver(request, driver_id):
-    if request.method == "POST":
-        try:
-            driver = Driver.objects.get(id=driver_id)
-            driver.is_verified = False
-            driver.save()
-            return JsonResponse({"status": "unverified", "driver_id": driver_id})
-        except Driver.DoesNotExist:
-            return JsonResponse({"error": "Driver not found"}, status=404)
-    return JsonResponse({"error": "Invalid method"}, status=405)
-
+    return JsonResponse({"status": False, "message": "Invalid method"}, status=405)
 
 # -----------------------------
 # Driver Login
@@ -210,25 +225,33 @@ def unverify_driver(request, driver_id):
 @csrf_exempt
 def driver_login(request):
     if request.method == "POST":
-        data = json.loads(request.body)
+        try:
+            data = json.loads(request.body)
+        except Exception:
+            return JsonResponse({"status": False, "message": "Invalid JSON"}, status=400)
+
         phone = data.get("phone")
         license_number = data.get("license_number")
+
+        if not phone or not license_number:
+            return JsonResponse({"status": False, "message": "Phone and license required"}, status=400)
 
         try:
             driver = Driver.objects.get(phone=phone, license_number=license_number)
             if driver.is_verified:
                 refresh = RefreshToken.for_user(driver.user)
                 return JsonResponse({
-                    "status": "ok",
+                    "status": True,
+                    "message": "Login successful",
                     "driver_id": driver.id,
                     "access": str(refresh.access_token),
                     "refresh": str(refresh)
                 })
             else:
-                return JsonResponse({"error": "Driver not verified"}, status=403)
+                return JsonResponse({"status": False, "message": "Driver not verified"}, status=403)
         except Driver.DoesNotExist:
-            return JsonResponse({"error": "Invalid credentials"}, status=401)
-
+            return JsonResponse({"status": False, "message": "Invalid credentials"}, status=401)
+    return JsonResponse({"status": False, "message": "Invalid method"}, status=405)
 
 # -----------------------------
 # Request Ride (Passenger)
@@ -247,14 +270,14 @@ def request_ride(request):
     dropoff_lng = data.get("dropoff_lng")
 
     if not pickup_location or not dropoff_location:
-        return Response({"error": "Pickup and dropoff are required"}, status=400)
+        return Response({"status": False, "message": "Pickup and dropoff required"}, status=400)
 
     if not pickup_lat or not pickup_lng or not dropoff_lat or not dropoff_lng:
-        return Response({"error": "Coordinates are required"}, status=400)
+        return Response({"status": False, "message": "Coordinates required"}, status=400)
 
     price = calculate_price(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng)
     if price <= 0:
-        return Response({"error": "Invalid price calculation"}, status=400)
+        return Response({"status": False, "message": "Invalid price calculation"}, status=400)
 
     ride = Ride.objects.create(
         passenger=passenger,
@@ -269,22 +292,19 @@ def request_ride(request):
     )
 
     serializer = RideSerializer(ride)
-    return Response(serializer.data, status=201)
-
-
+    return Response({"status": True, "message": "Ride requested", "ride": serializer.data}, status=201)
 # -----------------------------
-# List Drivers
+# List Drivers (Passenger)
 # -----------------------------
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_drivers(request):
     drivers = Driver.objects.filter(is_verified=True)
     serializer = DriverSerializer(drivers, many=True)
-    return Response(serializer.data)
-
+    return Response({"status": True, "drivers": serializer.data})
 
 # -----------------------------
-# Assign Driver
+# Assign Driver (Passenger)
 # -----------------------------
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -293,7 +313,7 @@ def assign_driver(request):
     ride_id = request.data.get("rideId")
 
     if not driver_id or not ride_id:
-        return Response({"error": "Missing driverId or rideId"}, status=400)
+        return Response({"status": False, "message": "Missing driverId or rideId"}, status=400)
 
     try:
         driver = Driver.objects.get(id=driver_id, is_verified=True)
@@ -303,11 +323,11 @@ def assign_driver(request):
         ride.save()
 
         serializer = RideSerializer(ride)
-        return Response(serializer.data)
+        return Response({"status": True, "message": "Driver assigned", "ride": serializer.data})
     except Driver.DoesNotExist:
-        return Response({"error": "Driver not found"}, status=404)
+        return Response({"status": False, "message": "Driver not found"}, status=404)
     except Ride.DoesNotExist:
-        return Response({"error": "Ride not found"}, status=404)
+        return Response({"status": False, "message": "Ride not found"}, status=404)
 
 # -----------------------------
 # Pending Rides (Driver)
@@ -317,8 +337,7 @@ def assign_driver(request):
 def pending_rides(request):
     rides = Ride.objects.filter(status="pending")
     serializer = RideSerializer(rides, many=True)
-    return Response(serializer.data)
-
+    return Response({"status": True, "rides": serializer.data})
 
 # -----------------------------
 # Accept Ride (Driver)
@@ -329,20 +348,19 @@ def accept_ride(request, ride_id):
     try:
         driver = Driver.objects.get(user=request.user, is_verified=True)
     except Driver.DoesNotExist:
-        return Response({"error": "Driver not found or not verified"}, status=400)
+        return Response({"status": False, "message": "Driver not found or not verified"}, status=400)
 
     try:
         ride = Ride.objects.get(id=ride_id, status="pending")
     except Ride.DoesNotExist:
-        return Response({"error": "Ride not found or already accepted"}, status=404)
+        return Response({"status": False, "message": "Ride not found or already accepted"}, status=404)
 
     ride.driver = driver
     ride.status = "accepted"
     ride.save()
 
     serializer = RideSerializer(ride)
-    return Response(serializer.data)
-
+    return Response({"status": True, "message": "Ride accepted", "ride": serializer.data})
 
 # -----------------------------
 # Complete Ride (Driver)
@@ -355,19 +373,18 @@ def complete_ride(request):
     try:
         driver = Driver.objects.get(user=request.user, is_verified=True)
     except Driver.DoesNotExist:
-        return Response({"error": "Driver not found or not verified"}, status=400)
+        return Response({"status": False, "message": "Driver not found or not verified"}, status=400)
 
     try:
         ride = Ride.objects.get(id=ride_id, driver=driver, status="accepted")
     except Ride.DoesNotExist:
-        return Response({"error": "Ride not found or not accepted"}, status=400)
+        return Response({"status": False, "message": "Ride not found or not accepted"}, status=400)
 
     ride.status = "completed"
     ride.save()
 
     serializer = RideSerializer(ride)
-    return Response(serializer.data)
-
+    return Response({"status": True, "message": "Ride completed", "ride": serializer.data})
 
 # -----------------------------
 # Passenger Ride History
@@ -378,8 +395,7 @@ def passenger_rides(request):
     passenger = Passenger.objects.get(user=request.user, verified=True)
     rides = Ride.objects.filter(passenger=passenger)
     serializer = RideSerializer(rides, many=True)
-    return Response(serializer.data)
-
+    return Response({"status": True, "rides": serializer.data})
 
 # -----------------------------
 # Driver Ride History
@@ -390,8 +406,7 @@ def driver_rides(request):
     driver = Driver.objects.get(user=request.user, is_verified=True)
     rides = Ride.objects.filter(driver=driver)
     serializer = RideSerializer(rides, many=True)
-    return Response(serializer.data)
-
+    return Response({"status": True, "rides": serializer.data})
 
 # -----------------------------
 # Rate Driver (Passenger)
@@ -403,17 +418,17 @@ def rate_driver(request):
     rating = request.data.get("rating")
 
     if rating is None or not (0 <= int(rating) <= 5):
-        return Response({"error": "Rating must be between 0 and 5"}, status=400)
+        return Response({"status": False, "message": "Rating must be between 0 and 5"}, status=400)
 
     passenger = Passenger.objects.get(user=request.user, verified=True)
 
     try:
         ride = Ride.objects.get(id=ride_id, passenger=passenger, status="completed")
     except Ride.DoesNotExist:
-        return Response({"error": "Ride not found or not completed"}, status=400)
+        return Response({"status": False, "message": "Ride not found or not completed"}, status=400)
 
     ride.rating = int(rating)
     ride.save()
 
     serializer = RideSerializer(ride)
-    return Response(serializer.data)
+    return Response({"status": True, "message": "Driver rated", "ride": serializer.data})
